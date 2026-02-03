@@ -1,0 +1,240 @@
+================================================================================
+                    BLOCKCHAIN EM RUST - GUIA DE USO
+================================================================================
+
+O QUE É ESTE PROJETO?
+---------------------
+Uma blockchain completa escrita em Rust, com:
+  - Mineração de blocos (Proof of Work com SHA-256)
+  - Carteiras digitais com assinaturas Ed25519
+  - Smart contracts com uma VM própria
+  - API REST para interagir com o nó
+  - Rede P2P para sincronização entre nós (libp2p)
+
+================================================================================
+
+ESTRUTURA DO PROJETO
+--------------------
+Blokchain/
+├── init.sh                  Script de setup inicial
+├── .env                     Configurações do nó
+├── CLAUDE.md                Contexto para o Claude Code
+├── docs/adr/                Decisões de arquitetura (ADRs)
+└── crates/
+    ├── blockchain-core/     Blocos, transações, merkle, wallet, estado, chain
+    ├── blockchain-vm/       VM para smart contracts (18 opcodes)
+    ├── blockchain-api/      API REST com 12 endpoints (Axum)
+    ├── blockchain-network/  Rede P2P (gossipsub + mDNS)
+    └── blockchain-node/     Binário que conecta tudo
+
+================================================================================
+
+COMO COMEÇAR
+------------
+1. Setup inicial (uma vez):
+
+   ./init.sh
+
+   Isso instala o Rust (se necessário), cria o .env, compila e roda os testes.
+
+2. Rodar o nó:
+
+   cargo run --release -p blockchain-node
+
+   O nó vai iniciar com as configurações do .env:
+   - API em http://localhost:8080
+   - Difficulty 2 (hash precisa começar com "00")
+   - Reward de 50 por bloco minerado
+
+3. Ou passar parâmetros manualmente:
+
+   cargo run --release -p blockchain-node -- --api-port 9090 --difficulty 3
+
+================================================================================
+
+CONFIGURAÇÃO (.env)
+-------------------
+Edite o arquivo .env na raiz do projeto:
+
+   API_PORT=8080        Porta da API REST
+   P2P_PORT=0           Porta P2P (0 = aleatória)
+   DIFFICULTY=2         Dificuldade de mineração (nº de zeros no hash)
+   MINING_REWARD=50     Recompensa por bloco minerado
+   RUST_LOG=info        Nível de log (debug, info, warn, error)
+
+Prioridade: flags CLI > .env > valores padrão
+
+================================================================================
+
+COMO USAR A API (com curl)
+--------------------------
+
+--- Informações do nó ---
+
+   curl http://localhost:8080/api/node/info
+
+   Resposta: {"chain_length":1,"difficulty":2,"mining_reward":50,...}
+
+--- Criar uma carteira ---
+
+   curl -X POST http://localhost:8080/api/wallet/new
+
+   Resposta: {"address":"0xabc123...","public_key":"def456..."}
+
+--- Minerar um bloco ---
+
+   curl -X POST http://localhost:8080/api/blocks/mine
+
+   Resposta: {"block_index":1,"block_hash":"00abc...","transactions_count":1}
+
+   Cada bloco minerado dá 50 de recompensa ao minerador.
+
+--- Ver saldo ---
+
+   curl http://localhost:8080/api/balance/miner-node
+
+   Resposta: {"address":"miner-node","balance":50}
+
+--- Ver um bloco ---
+
+   curl http://localhost:8080/api/blocks/0        (genesis)
+   curl http://localhost:8080/api/blocks/1        (primeiro minerado)
+
+--- Ver a chain inteira ---
+
+   curl http://localhost:8080/api/chain
+
+--- Validar a chain ---
+
+   curl http://localhost:8080/api/chain/valid
+
+   Resposta: {"valid":true,"length":4}
+
+--- Criar uma transação ---
+
+   curl -X POST http://localhost:8080/api/transactions \
+     -H "Content-Type: application/json" \
+     -d '{"sender":"miner-node","recipient":"0xabc123...","amount":10}'
+
+   Nota: transações entre usuários precisam de assinatura digital.
+   Transações do sistema (recompensas) não precisam.
+
+--- Ver transações pendentes ---
+
+   curl http://localhost:8080/api/transactions/pending
+
+--- Ver peers conectados ---
+
+   curl http://localhost:8080/api/peers
+
+================================================================================
+
+SMART CONTRACTS
+---------------
+A VM suporta 18 instruções em assembly. Exemplo de contrato que soma 10+20:
+
+   PUSH 10
+   PUSH 20
+   ADD
+   DUP
+   LOG
+   HALT
+
+--- Fazer deploy ---
+
+   curl -X POST http://localhost:8080/api/contracts/deploy \
+     -H "Content-Type: application/json" \
+     -d '{"sender":"alice","source_code":"PUSH 10\nPUSH 20\nADD\nDUP\nLOG\nHALT"}'
+
+   Resposta: {"address":"0xc789..."}
+
+--- Chamar um contrato ---
+
+   curl -X POST http://localhost:8080/api/contracts/call \
+     -H "Content-Type: application/json" \
+     -d '{"sender":"alice","contract_address":"0xc789..."}'
+
+   Resposta: {"logs":[30],"result":30,"steps_used":6}
+
+--- Instruções disponíveis ---
+
+   PUSH <n>    Empilha um número
+   POP         Remove o topo da pilha
+   DUP         Duplica o topo
+   SWAP        Troca os dois do topo
+   ADD         Soma
+   SUB         Subtração
+   MUL         Multiplicação
+   DIV         Divisão
+   MOD         Módulo
+   EQ          Igual (1 ou 0)
+   LT          Menor que
+   GT          Maior que
+   NOT         Inverte (0->1, qualquer->0)
+   JUMP        Pula para posição no bytecode
+   JUMPIF      Pula se topo != 0
+   STORE       Salva valor no storage (chave, valor)
+   LOAD        Carrega valor do storage (chave)
+   LOG         Registra o valor no log
+   HALT        Para a execução
+
+   Limites: pilha máx 1024, máx 100.000 passos (gas)
+
+================================================================================
+
+REDE P2P
+--------
+Os nós se descobrem automaticamente na rede local via mDNS.
+
+Para rodar dois nós na mesma máquina:
+
+   Terminal 1:
+   cargo run --release -p blockchain-node -- --api-port 8080
+
+   Terminal 2:
+   cargo run --release -p blockchain-node -- --api-port 8081
+
+Eles vão se descobrir e sincronizar blocos automaticamente.
+
+================================================================================
+
+TESTES
+------
+Rodar todos os testes (39 testes):
+
+   cargo test --workspace
+
+Testar apenas um crate:
+
+   cargo test -p blockchain-core      (22 testes)
+   cargo test -p blockchain-vm        (17 testes)
+
+================================================================================
+
+SKILLS DO CLAUDE CODE
+---------------------
+Se estiver usando o Claude Code, os seguintes comandos estão disponíveis:
+
+   /start             Inicia o nó
+   /stop              Para o nó
+   /mine              Minera um bloco
+   /status            Status completo do nó
+   /test-api          Testa todos os endpoints
+   /deploy-contract   Deploy de smart contract
+   /new-adr           Cria nova decisão de arquitetura (ADR)
+
+================================================================================
+
+FLUXO TÍPICO DE USO
+--------------------
+1. Iniciar o nó           cargo run --release -p blockchain-node
+2. Criar uma carteira     POST /api/wallet/new
+3. Minerar blocos         POST /api/blocks/mine  (ganha 50 por bloco)
+4. Verificar saldo        GET /api/balance/miner-node
+5. Enviar transação       POST /api/transactions
+6. Minerar novamente      POST /api/blocks/mine  (confirma a transação)
+7. Deploy de contrato     POST /api/contracts/deploy
+8. Chamar contrato        POST /api/contracts/call
+9. Verificar chain        GET /api/chain/valid
+
+================================================================================
